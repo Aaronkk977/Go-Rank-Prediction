@@ -78,10 +78,20 @@ INT_TO_RANK = {i+1:r for i,r in enumerate(RANKS)}  # 1->'1D'
 
 
 def _to_floats_from_line(line: str) -> List[float]:
-    # Handles both plain floats and percentages in the line
-    if "%" in line:
-        return [float(m.group(1)) / 100.0 for m in PCT_RE.finditer(line)]
-    return [float(x) for x in FLOAT_RE.findall(line)]
+    # Correctly handles lines with mixed percentages and floats.
+    # It works by first substituting all percentages (e.g., "41.2%")
+    # with their decimal representation ("0.412") in the string.
+    
+    def percentage_to_float_string(match):
+        # Takes a regex match object, converts the captured number, and returns it as a string.
+        return str(float(match.group(1)) / 100.0)
+
+    # Use re.sub with a function to perform the replacement for all occurrences.
+    # For a line "41.2% -0.6 17.2", this creates a new string "0.412 -0.6 17.2"
+    processed_line = PCT_RE.sub(percentage_to_float_string, line)
+    
+    # Now, safely find all float numbers in the processed string.
+    return [float(x) for x in FLOAT_RE.findall(processed_line)]
 
 
 def _parse_one_move(block: List[str]) -> Optional[List[float]]:
