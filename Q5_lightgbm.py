@@ -16,10 +16,9 @@ Assumed directory layout after you unzip the Kaggle dataset:
         1.txt (single game)
         2.txt
         ...
-    sample_submission.csv
 
 Usage:
-    python Q5.py --data_dir ./dataset --out submission.csv
+    python Q5_lightgbm.py --data_dir ./dataset --out submission.csv
 
 Optional:
     python Q5.py --data_dir ./dataset --no-train  # (will try to load saved weights if available)
@@ -96,16 +95,19 @@ def _parse_one_move(block: List[str]) -> Optional[List[float]]:
     # 1. Policy: 9 floats on its line
     policy = _to_floats(block[1])
     policy_max = np.argmax(policy)
-    # policy_gini = 1.0 - sum((p ** 2 for p in policy)) if sum(policy) > 0 else 0.0
+    # max-second index gap
+    policy_top = policy_max - np.argsort(policy)[1]
 
     # 2. Value Predictions: 9 floats on its line
     values = _to_floats(block[2])
     values_max = np.argmax(values)
+    values_top = values_max - np.argsort(values)[1]
     # values_gini = 1.0 - sum((v ** 2 for v in values)) if sum(values) > 0 else 0.0
 
     # 3. Rank Model Outputs: 9 floats on its line
     rankouts = _to_floats(block[3])
     rankouts_max = np.argmax(rankouts)
+    rankouts_top = rankouts_max - np.argsort(rankouts)[1]
     rankouts_weighted_avg = np.average(rankouts, weights=np.arange(1, 10))
     # rankouts_gini = 1.0 - sum((r ** 2 for r in rankouts)) if sum(rankouts) > 0 else 0.0
 
@@ -123,21 +125,24 @@ def _parse_one_move(block: List[str]) -> Optional[List[float]]:
 
     feats = []
     feats.extend(policy)        # 9
-    # feats.append(policy_max)      # +1 = 10
+    feats.append(policy_max)      # +1 = 10
+    feats.append(policy_top)      # +1 = 11
     # feats.append(policy_5avg)     # +1 = 11
     # feats.append(policy_gini)    # +1 = 12
     feats.extend(values)        # +9 = 21
-    # feats.append(values_max)      # +1 = 22
+    feats.append(values_max)      # +1 = 22
+    feats.append(values_top)      # +1 = 23
     # feats.append(values_5avg)     # +1 = 23
     # feats.append(values_gini)   # +1 = 24
     feats.extend(rankouts)      # +9 = 30
-    # feats.append(rankouts_max)    # +1 = 25
+    feats.append(rankouts_max)    # +1 = 25
+    feats.append(rankouts_top)    # +1 = 26
     # feats.append(rankouts_5avg)   # +1 = 26
     feats.append(rankouts_weighted_avg)  # +1 = 27
     # feats.append(rankouts_gini)  # +1 = 28
-    # feats.append(strength)        # +1 = 29
-    # feats.append(kata_wr)         # +1 = 30
-    # feats.append(kata_lead)       # +1 = 31
+    feats.append(strength)        # +1 = 29
+    feats.append(kata_wr)         # +1 = 30
+    feats.append(kata_lead)       # +1 = 31
     feats.append(kata_unc)        # +1 = 32
     return feats
 
@@ -172,21 +177,21 @@ def parse_moves_from_file(fp: Path) -> List[List[float]]:
 def aggregate_features(moves: List[List[float]]) -> np.ndarray:
     """Aggregate move-level features to a fixed-length vector per (game/file).
        We use simple stats: mean, std, min, max for each dim + move_count.
-       Output shape: 32*8 + 1 = 233 dims.
+       Output shape: 32*14 + 1 = 233 dims.
     """
     if not moves:
         # Return zeros if empty (shouldn't happen if data is well-formed)
-        return np.zeros(29 * 8 + 1, dtype=np.float32)
+        return np.zeros(41 * 14 + 1, dtype=np.float32)
     X = np.asarray(moves, dtype=np.float32)  # [num_moves, 233]
     n_moves, n_feats = X.shape
 
     mean = X.mean(axis=0)
     std = X.std(axis=0)
-    # vmin = X.min(axis=0)
-    # vmax = X.max(axis=0)
-    # q20 = np.percentile(X, 20, axis=0)
-    # q70 = np.percentile(X, 70, axis=0)
-    # median = np.median(X, axis=0)
+    vmin = X.min(axis=0)
+    vmax = X.max(axis=0)
+    q20 = np.percentile(X, 20, axis=0)
+    q70 = np.percentile(X, 70, axis=0)
+    median = np.median(X, axis=0)
 
     cutoff1 = int(0.2 * n_moves)
     cutoff2 = int(0.5 * n_moves)
@@ -205,10 +210,10 @@ def aggregate_features(moves: List[List[float]]) -> np.ndarray:
 
     #  print(f"[DEBUG] early_mean={early_mean}, mid_mean={mid_mean}, late_mean={late_mean}")
 
-    out = np.concatenate([mean, early_mean, mid_mean, late_mean, std, early_std, mid_std, late_std])
+    out = np.concatenate([mean, std, median, vmin, vmax, q20, q70]) # 7
+    out = np.concatenate([early_mean, mid_mean, late_mean, early_std, mid_std, late_std]) # +6 = 13
     #print(f"[DEBUG] Aggregated {n_moves} moves -> feature: {out}")
-    # out = np.concatenate([mean, std, vmin, vmax, q20, q70, median, mid_late_mean, mid_late_std, early_mean, early_std, np.array([float(len(moves))])])
-    out = np.concatenate(out, [np.array([float(len(moves))])])
+    out = np.concatenate([out, np.array([float(len(moves))])]) # +1 = 14
     return out.astype(np.float32)
 
 
@@ -272,7 +277,7 @@ def parse_file_aggregate(fp: Path) -> Tuple[np.ndarray, int]:
     rank = m.group(1)
     y_idx = RANK2IDX[rank]
 
-    X = np.vstack(feats) if feats else np.zeros((0, 29 * 8 + 1), dtype=np.float32)
+    X = np.vstack(feats) if feats else np.zeros((0, 41 * 14 + 1), dtype=np.float32)
     y = np.full((X.shape[0],), y_idx, dtype=np.int64)
     return X, y_idx, y
 
@@ -292,7 +297,7 @@ def load_train_set(train_dir: Path) -> Tuple[np.ndarray, np.ndarray]:
         X_list.append(Xd)
         y_list.append(yd)
         print(f"[INFO] Parsed {fp.name}: {Xd.shape[0]} games -> label {IDX2RANK[y_idx]}")
-    X = np.vstack(X_list) if X_list else np.zeros((0, 29 * 8 + 1), dtype=np.float32)
+    X = np.vstack(X_list) if X_list else np.zeros((0, 41 * 14 + 1), dtype=np.float32)
     y = np.concatenate(y_list) if y_list else np.zeros((0,), dtype=np.int64)
     print(f"[INFO] Train set: X={X.shape}, y={y.shape}")
     return X, y
@@ -307,7 +312,7 @@ def load_test_set(test_dir: Path) -> Tuple[List[str], np.ndarray]:
         feats.append(Xvec)
         ids.append(fp.stem)
         print(f"[INFO] Parsed test file {fp.name}: moves={len(moves)} -> features shape={Xvec.shape}")
-    X = np.vstack(feats) if feats else np.zeros((0, 29 * 8 + 1), dtype=np.float32)
+    X = np.vstack(feats) if feats else np.zeros((0, 41 * 14 + 1), dtype=np.float32)
     return ids, X
 
 # adjust hyperparameters here
@@ -374,7 +379,8 @@ def write_submission(ids: List[str], ranks: List[str], out_csv: Path):
     with open(out_csv, 'w', encoding='utf-8') as f:
         f.write('id,label\n')
         for i, r in zip(ids, ranks):
-            f.write(f"{i},{r}\n")
+            label = RANK2IDX[r] + 1
+            f.write(f"{i},{label}\n")
     print(f"[INFO] Wrote submission to {out_csv}")
 
 
