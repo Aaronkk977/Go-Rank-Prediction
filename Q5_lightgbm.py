@@ -122,6 +122,8 @@ def _parse_one_move(block: List[str]) -> Optional[List[float]]:
     if is_white:
         kata_wr = 1.0 - kata_wr
         kata_lead = -kata_lead
+    kata_wr_err = abs(kata_wr - 0.5)
+    kata_lead_abs = abs(kata_lead)
 
     feats = []
     feats.extend(policy)        # 9
@@ -140,10 +142,12 @@ def _parse_one_move(block: List[str]) -> Optional[List[float]]:
     # feats.append(rankouts_5avg)   # +1 = 26
     feats.append(rankouts_weighted_avg)  # +1 = 27
     # feats.append(rankouts_gini)  # +1 = 28
-    feats.append(strength)        # +1 = 29
-    feats.append(kata_wr)         # +1 = 30
-    feats.append(kata_lead)       # +1 = 31
-    feats.append(kata_unc)        # +1 = 32
+    feats.append(strength)        # +1 
+    feats.append(kata_wr)         # +1 
+    feats.append(kata_wr_err)     # +1
+    feats.append(kata_lead)       # +1
+    feats.append(kata_lead_abs)   # +1
+    feats.append(kata_unc)        # +1 
     return feats
 
 
@@ -177,11 +181,11 @@ def parse_moves_from_file(fp: Path) -> List[List[float]]:
 def aggregate_features(moves: List[List[float]]) -> np.ndarray:
     """Aggregate move-level features to a fixed-length vector per (game/file).
        We use simple stats: mean, std, min, max for each dim + move_count.
-       Output shape: 32*14 + 1 = 233 dims.
+       Output shape: 43*14 + 1 = 465 dims.
     """
     if not moves:
         # Return zeros if empty (shouldn't happen if data is well-formed)
-        return np.zeros(41 * 14 + 1, dtype=np.float32)
+        return np.zeros(43 * 14 + 1, dtype=np.float32)
     X = np.asarray(moves, dtype=np.float32)  # [num_moves, 233]
     n_moves, n_feats = X.shape
 
@@ -277,7 +281,7 @@ def parse_file_aggregate(fp: Path) -> Tuple[np.ndarray, int]:
     rank = m.group(1)
     y_idx = RANK2IDX[rank]
 
-    X = np.vstack(feats) if feats else np.zeros((0, 41 * 14 + 1), dtype=np.float32)
+    X = np.vstack(feats) if feats else np.zeros((0, 43 * 14 + 1), dtype=np.float32)
     y = np.full((X.shape[0],), y_idx, dtype=np.int64)
     return X, y_idx, y
 
@@ -297,7 +301,7 @@ def load_train_set(train_dir: Path) -> Tuple[np.ndarray, np.ndarray]:
         X_list.append(Xd)
         y_list.append(yd)
         print(f"[INFO] Parsed {fp.name}: {Xd.shape[0]} games -> label {IDX2RANK[y_idx]}")
-    X = np.vstack(X_list) if X_list else np.zeros((0, 41 * 14 + 1), dtype=np.float32)
+    X = np.vstack(X_list) if X_list else np.zeros((0, 43 * 14 + 1), dtype=np.float32)
     y = np.concatenate(y_list) if y_list else np.zeros((0,), dtype=np.int64)
     print(f"[INFO] Train set: X={X.shape}, y={y.shape}")
     return X, y
@@ -312,7 +316,7 @@ def load_test_set(test_dir: Path) -> Tuple[List[str], np.ndarray]:
         feats.append(Xvec)
         ids.append(fp.stem)
         print(f"[INFO] Parsed test file {fp.name}: moves={len(moves)} -> features shape={Xvec.shape}")
-    X = np.vstack(feats) if feats else np.zeros((0, 41 * 14 + 1), dtype=np.float32)
+    X = np.vstack(feats) if feats else np.zeros((0, 43 * 14 + 1), dtype=np.float32)
     return ids, X
 
 # adjust hyperparameters here
