@@ -345,7 +345,7 @@ def train_lightgbm(X: np.ndarray, y: np.ndarray, seed: int = 42):
         objective="multiclass",
         num_class=9,
         learning_rate=0.05, # 0.01 - 0.05
-        n_estimators=600, # - 2000
+        n_estimators=1500, # - 2000
         subsample=0.8, # 0.8 - 1.0
         colsample_bytree=0.9,
         num_leaves=255,
@@ -353,6 +353,8 @@ def train_lightgbm(X: np.ndarray, y: np.ndarray, seed: int = 42):
         random_state=seed,
         n_jobs=-1,
         min_child_samples=20,
+        reg_alpha=0.1,
+        reg_lambda=0.1,
     )
     model = lgb.LGBMClassifier(**params)
     model.fit(X, y)
