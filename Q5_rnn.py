@@ -1,10 +1,7 @@
-# =============================
-# File: Q5.py
-# =============================
 """
 This script MUST generate submission.csv when executed, per the assignment spec.
 Usage:
-python Q5.py --test_dir ./test --weights ./outputs/best_rnn_model.pt --out submission.csv
+python Q5_rnn.py --test_dir ./test --weights ./outputs/best_rnn_model.pt --out submission_rnn.csv
 
 
 If you want to re-train from scratch inside Q5.py, add a flag like --train_first (NOT default).
@@ -21,8 +18,6 @@ GoSequenceDataset, collate_batch, read_test_files, ID_TO_RANK
 )
 
 
-
-
 def load_model(weights_path: str, input_dim: int = 31, hidden_dim: int = 128,
                num_layers: int = 2, dropout: float = 0.2, device='cpu'):
     # 允許非 weights-only 的反序列化（信任來源時可用）
@@ -37,9 +32,6 @@ def load_model(weights_path: str, input_dim: int = 31, hidden_dim: int = 128,
     mean = ckpt['mean']
     std  = ckpt['std']
     return model, mean, std
-
-
-
 
 
 def predict(args):
@@ -86,7 +78,7 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--test_dir', type=str, default='./data_set/test_set')
     ap.add_argument('--weights', type=str, default='./outputs/best_rnn_model.pt')
-    ap.add_argument('--out', type=str, default='submission.csv')
+    ap.add_argument('--out', type=str, default='submission_rnn.csv')
 
 
     # Model hyper-params should match your trained checkpoint

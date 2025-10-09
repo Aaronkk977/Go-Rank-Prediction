@@ -302,7 +302,7 @@ class AttnPool(nn.Module):
         return (h * a).sum(dim=1)  # [B,d]
 
 class GoRankMLP(nn.Module):
-    def __init__(self, in_dim=FEAT_DIM, d=128, p=0.1, num_classes=9):
+    def __init__(self, in_dim=FEAT_DIM, d=128, p=0.2, num_classes=9):
         super().__init__()
         self.enc = MoveEncoder(in_dim, hid=d, out=d, p=p)
         self.attn = AttnPool(d)
@@ -413,7 +413,7 @@ def run_train(data_dir: str, weights_out: str, batch_size=8, epochs=12, lr=3e-4,
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = GoRankMLP(FEAT_DIM, d=160, p=0.1, num_classes=9).to(device)
 
-    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=2e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, epochs*len(train_loader)))
 
     best_acc, best_state = 0.0, None
@@ -475,5 +475,5 @@ if __name__ == '__main__':
         print("[INFO] Training MLP (DeepSets)...")
         run_train(args.data_dir, args.weights, batch_size=args.batch_size, epochs=args.epochs)
 
-    print("[INFO] Running inference and writing submission.csv ...")
+    print("[INFO] Running inference and writing submission_mlp.csv ...")
     run_infer(args.data_dir, args.weights, args.out)

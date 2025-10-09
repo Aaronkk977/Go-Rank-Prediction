@@ -1,6 +1,3 @@
-# =============================
-# File: training.py
-# =============================
 import os
 import argparse
 import numpy as np
