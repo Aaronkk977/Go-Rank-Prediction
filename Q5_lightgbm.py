@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import List, Tuple, Optional
 from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.metrics import accuracy_score
+import scipy.stats
 
 import numpy as np
 
@@ -94,22 +95,45 @@ def _parse_one_move(block: List[str]) -> Optional[List[float]]:
 
     # 1. Policy: 9 floats on its line
     policy = _to_floats(block[1])
+    total = sum(policy)
+    policy = [p / total for p in policy] if sum(policy) > 0 else [1.0/9]*9
     policy_max = np.argmax(policy)
-    # max-second index gap
-    policy_top = policy_max - np.argsort(policy)[1]
+    policy_pos_diff = policy_max - np.argsort(policy)[-2]
+
+    def entropy(prob: List[float], eps: float = 1e-8) -> float:
+        prob = np.asarray(prob, dtype=float)  # 轉成 numpy 陣列
+        sum_p = np.sum(prob) + eps
+        prob_norm = prob / sum_p
+
+        prob_sorted = np.sort(prob_norm)
+        p1 = prob_sorted[-1]
+        p2 = prob_sorted[-2]
+        prob_margin = p1 - p2
+
+        entropy_val = -np.sum(prob_norm * np.log(prob_norm + eps))
+        entropy_max = np.log(len(prob_norm))  # log(9)
+        entropy_compact = 1.0 - (entropy_val / (entropy_max + eps))  # 歸一化 (0~1)
+
+        margin_weighted_ent = prob_margin * entropy_compact
+
+        return float(margin_weighted_ent)
+    
+    policy_entropy = entropy(policy)
+    policy_times_ent = [p * policy_entropy for p in policy]
 
     # 2. Value Predictions: 9 floats on its line
     values = _to_floats(block[2])
     values_max = np.argmax(values)
-    values_top = values_max - np.argsort(values)[1]
-    # values_gini = 1.0 - sum((v ** 2 for v in values)) if sum(values) > 0 else 0.0
+    values_pos_diff = values_max - np.argsort(values)[-2]
 
     # 3. Rank Model Outputs: 9 floats on its line
     rankouts = _to_floats(block[3])
     rankouts_max = np.argmax(rankouts)
-    rankouts_top = rankouts_max - np.argsort(rankouts)[1]
+    rankouts_pos_diff = rankouts_max - np.argsort(rankouts)[-2]
     rankouts_weighted_avg = np.average(rankouts, weights=np.arange(1, 10))
-    # rankouts_gini = 1.0 - sum((r ** 2 for r in rankouts)) if sum(rankouts) > 0 else 0.0
+
+    rankouts_entropy = entropy(rankouts)
+    rankouts_times_ent = [r * rankouts_entropy for r in rankouts]
 
     # 4. Strength: single float on its line
     strength_list = _to_floats(block[4])
@@ -125,29 +149,35 @@ def _parse_one_move(block: List[str]) -> Optional[List[float]]:
     kata_wr_err = abs(kata_wr - 0.5)
     kata_lead_abs = abs(kata_lead)
 
+    wr_diff = [abs(values[i] - kata_wr) for i in range(9)]
+
     feats = []
     feats.extend(policy)        # 9
-    feats.append(policy_max)      # +1 = 10
-    feats.append(policy_top)      # +1 = 11
-    # feats.append(policy_5avg)     # +1 = 11
-    # feats.append(policy_gini)    # +1 = 12
-    feats.extend(values)        # +9 = 21
-    feats.append(values_max)      # +1 = 22
-    feats.append(values_top)      # +1 = 23
-    # feats.append(values_5avg)     # +1 = 23
-    # feats.append(values_gini)   # +1 = 24
-    feats.extend(rankouts)      # +9 = 30
-    feats.append(rankouts_max)    # +1 = 25
-    feats.append(rankouts_top)    # +1 = 26
-    # feats.append(rankouts_5avg)   # +1 = 26
-    feats.append(rankouts_weighted_avg)  # +1 = 27
-    # feats.append(rankouts_gini)  # +1 = 28
+    feats.append(policy_max)      # +1 
+    feats.append(policy_pos_diff)      # +1 
+    feats.append(policy_entropy)  # +1 
+    feats.extend(policy_times_ent)  # +9 
+
+    feats.extend(values)        # +9 
+    feats.append(values_max)      # +1 
+    feats.append(values_pos_diff)      # +1 
+
+    feats.extend(rankouts)      # +9 
+    feats.append(rankouts_max)    # +1 
+    feats.append(rankouts_pos_diff)    # +1 
+    feats.append(rankouts_weighted_avg)  # +1 
+    feats.append(rankouts_entropy)  # +1
+    feats.extend(rankouts_times_ent)  # +9
+
     feats.append(strength)        # +1 
+
     feats.append(kata_wr)         # +1 
     feats.append(kata_wr_err)     # +1
     feats.append(kata_lead)       # +1
     feats.append(kata_lead_abs)   # +1
     feats.append(kata_unc)        # +1 
+
+    feats.extend(wr_diff)        # +9 = 69
     return feats
 
 
@@ -181,12 +211,12 @@ def parse_moves_from_file(fp: Path) -> List[List[float]]:
 def aggregate_features(moves: List[List[float]]) -> np.ndarray:
     """Aggregate move-level features to a fixed-length vector per (game/file).
        We use simple stats: mean, std, min, max for each dim + move_count.
-       Output shape: 43*14 + 1 = 465 dims.
+       Output shape: 69*18 + 1 = 901 dims.
     """
     if not moves:
         # Return zeros if empty (shouldn't happen if data is well-formed)
-        return np.zeros(43 * 14 + 1, dtype=np.float32)
-    X = np.asarray(moves, dtype=np.float32)  # [num_moves, 233]
+        return np.zeros(69 * 18 + 1, dtype=np.float32)
+    X = np.asarray(moves, dtype=np.float32)  
     n_moves, n_feats = X.shape
 
     mean = X.mean(axis=0)
@@ -194,48 +224,63 @@ def aggregate_features(moves: List[List[float]]) -> np.ndarray:
     vmin = X.min(axis=0)
     vmax = X.max(axis=0)
     q20 = np.percentile(X, 20, axis=0)
-    q70 = np.percentile(X, 70, axis=0)
+    q80 = np.percentile(X, 80, axis=0)
     median = np.median(X, axis=0)
 
     CUTOFF1 = 50
     CUTOFF2 = 150
 
-    # 2. 切分佈局 (Early Game / Fuseki)
+    # 2. Early Game / Fuseki
     early = X[:CUTOFF1, :]
     if early.shape[0] > 0:
         early_mean = early.mean(axis=0)
         early_std = early.std(axis=0)
     else:
-        # 如果棋局手數為0，則填充0
         early_mean = np.zeros(n_feats)
         early_std = np.zeros(n_feats)
 
-    # 3. 切分中盤 (Mid Game / Chuban)
+    # 3. Mid Game / Chuban
     mid = X[CUTOFF1:CUTOFF2, :]
     if mid.shape[0] > 0:
         mid_mean = mid.mean(axis=0)
         mid_std = mid.std(axis=0)
+        mid_median = np.median(mid, axis=0)
+        mid_q20 = np.percentile(mid, 20, axis=0)
+        mid_q80 = np.percentile(mid, 80, axis=0)
+
+        # safe compute skew and kurtosis to avoid precision loss warnings
+        mid_skew = np.zeros(n_feats)
+        mid_kurt = np.zeros(n_feats)
+        for i in range(n_feats):
+            col_data = mid[:, i]
+            if len(np.unique(col_data)) > 2 and np.std(col_data) > 1e-8:
+                mid_skew[i] = scipy.stats.skew(col_data)
+                mid_kurt[i] = scipy.stats.kurtosis(col_data)
     else:
-        # 如果棋局在50手內結束，則中盤特徵填充0
         mid_mean = np.zeros(n_feats)
         mid_std = np.zeros(n_feats)
+        mid_median = np.zeros(n_feats)
+        mid_q20 = np.zeros(n_feats)
+        mid_q80 = np.zeros(n_feats)
 
-    # 4. 切分官子 (Late Game / Yose)
+        mid_skew = np.zeros(n_feats)
+        mid_kurt = np.zeros(n_feats)
+
+    # 4. Late Game / Yose
     late = X[CUTOFF2:, :]
     if late.shape[0] > 0:
         late_mean = late.mean(axis=0)
         late_std = late.std(axis=0)
     else:
-        # 如果棋局在150手內結束，則官子特徵填充0
         late_mean = np.zeros(n_feats)
         late_std = np.zeros(n_feats)
 
     #  print(f"[DEBUG] early_mean={early_mean}, mid_mean={mid_mean}, late_mean={late_mean}")
 
-    out = np.concatenate([mean, std, median, vmin, vmax, q20, q70]) # 7
-    out = np.concatenate([out, early_mean, mid_mean, late_mean, early_std, mid_std, late_std]) # +6 = 13
+    out = np.concatenate([mean, std, median, vmin, vmax, q20, q80]) # 7
+    out = np.concatenate([out, early_mean, mid_mean, late_mean, early_std, mid_std, late_std, mid_median, mid_q20, mid_q80, mid_skew, mid_kurt]) # +11 = 18
     #print(f"[DEBUG] Aggregated {n_moves} moves -> feature: {out}")
-    out = np.concatenate([out, np.array([float(len(moves))])]) # +1 = 14
+    out = np.concatenate([out, np.array([float(len(moves))])]) # +1
     return out.astype(np.float32)
 
 
@@ -299,7 +344,7 @@ def parse_file_aggregate(fp: Path) -> Tuple[np.ndarray, int]:
     rank = m.group(1)
     y_idx = RANK2IDX[rank]
 
-    X = np.vstack(feats) if feats else np.zeros((0, 43 * 14 + 1), dtype=np.float32)
+    X = np.vstack(feats) if feats else np.zeros((0, 69 * 18 + 1), dtype=np.float32)
     y = np.full((X.shape[0],), y_idx, dtype=np.int64)
     return X, y_idx, y
 
@@ -319,7 +364,7 @@ def load_train_set(train_dir: Path) -> Tuple[np.ndarray, np.ndarray]:
         X_list.append(Xd)
         y_list.append(yd)
         print(f"[INFO] Parsed {fp.name}: {Xd.shape[0]} games -> label {IDX2RANK[y_idx]}")
-    X = np.vstack(X_list) if X_list else np.zeros((0, 43 * 14 + 1), dtype=np.float32)
+    X = np.vstack(X_list) if X_list else np.zeros((0, 69 * 18 + 1), dtype=np.float32)
     y = np.concatenate(y_list) if y_list else np.zeros((0,), dtype=np.int64)
     print(f"[INFO] Train set: X={X.shape}, y={y.shape}")
     return X, y
@@ -334,7 +379,7 @@ def load_test_set(test_dir: Path) -> Tuple[List[str], np.ndarray]:
         feats.append(Xvec)
         ids.append(fp.stem)
         print(f"[INFO] Parsed test file {fp.name}: moves={len(moves)} -> features shape={Xvec.shape}")
-    X = np.vstack(feats) if feats else np.zeros((0, 43 * 14 + 1), dtype=np.float32)
+    X = np.vstack(feats) if feats else np.zeros((0, 51 * 18 + 1), dtype=np.float32)
     return ids, X
 
 # adjust hyperparameters here
