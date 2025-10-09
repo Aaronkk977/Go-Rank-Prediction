@@ -197,25 +197,43 @@ def aggregate_features(moves: List[List[float]]) -> np.ndarray:
     q70 = np.percentile(X, 70, axis=0)
     median = np.median(X, axis=0)
 
-    cutoff1 = int(0.2 * n_moves)
-    cutoff2 = int(0.5 * n_moves)
+    CUTOFF1 = 50
+    CUTOFF2 = 150
 
-    early = X[:cutoff1, :] if n_moves > 1 else X
-    early_mean = early.mean(axis=0)
-    early_std = early.std(axis=0)
+    # 2. 切分佈局 (Early Game / Fuseki)
+    early = X[:CUTOFF1, :]
+    if early.shape[0] > 0:
+        early_mean = early.mean(axis=0)
+        early_std = early.std(axis=0)
+    else:
+        # 如果棋局手數為0，則填充0
+        early_mean = np.zeros(n_feats)
+        early_std = np.zeros(n_feats)
 
-    mid = X[cutoff1:cutoff2, :] if n_moves > 1 else X
-    mid_mean = mid.mean(axis=0)
-    mid_std = mid.std(axis=0)
+    # 3. 切分中盤 (Mid Game / Chuban)
+    mid = X[CUTOFF1:CUTOFF2, :]
+    if mid.shape[0] > 0:
+        mid_mean = mid.mean(axis=0)
+        mid_std = mid.std(axis=0)
+    else:
+        # 如果棋局在50手內結束，則中盤特徵填充0
+        mid_mean = np.zeros(n_feats)
+        mid_std = np.zeros(n_feats)
 
-    late = X[cutoff2:, :] if n_moves > 1 else X
-    late_mean = late.mean(axis=0)
-    late_std = late.std(axis=0)
+    # 4. 切分官子 (Late Game / Yose)
+    late = X[CUTOFF2:, :]
+    if late.shape[0] > 0:
+        late_mean = late.mean(axis=0)
+        late_std = late.std(axis=0)
+    else:
+        # 如果棋局在150手內結束，則官子特徵填充0
+        late_mean = np.zeros(n_feats)
+        late_std = np.zeros(n_feats)
 
     #  print(f"[DEBUG] early_mean={early_mean}, mid_mean={mid_mean}, late_mean={late_mean}")
 
     out = np.concatenate([mean, std, median, vmin, vmax, q20, q70]) # 7
-    out = np.concatenate([early_mean, mid_mean, late_mean, early_std, mid_std, late_std]) # +6 = 13
+    out = np.concatenate([out, early_mean, mid_mean, late_mean, early_std, mid_std, late_std]) # +6 = 13
     #print(f"[DEBUG] Aggregated {n_moves} moves -> feature: {out}")
     out = np.concatenate([out, np.array([float(len(moves))])]) # +1 = 14
     return out.astype(np.float32)
