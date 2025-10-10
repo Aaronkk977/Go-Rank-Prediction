@@ -120,11 +120,24 @@ def _parse_one_move(block: List[str]) -> Optional[List[float]]:
     
     policy_entropy = entropy(policy)
     policy_times_ent = [p * policy_entropy for p in policy]
+    
+    # Additional policy features
+    policy_std = np.std(policy)
+    policy_variance = np.var(policy)
+    policy_top3_sum = np.sum(np.sort(policy)[-3:])  # Sum of top 3 probabilities
+    policy_gini = 1 - np.sum(np.square(policy))  # Gini coefficient for diversity
+    policy_range = np.max(policy) - np.min(policy)
 
     # 2. Value Predictions: 9 floats on its line
     values = _to_floats(block[2])
     values_max = np.argmax(values)
-    values_pos_diff = values_max - np.argsort(values)[-2]
+    values_pos_diff = values_max - np.argsort(values)[-2] if len(values) >= 2 else 0.0
+    
+    # Additional value features
+    values_entropy = entropy(values)
+    values_std = np.std(values)
+    values_weighted_avg = np.average(values, weights=np.arange(1, 10))
+    values_confidence = np.max(values) - np.mean(values)
 
     # 3. Rank Model Outputs: 9 floats on its line
     rankouts = _to_floats(block[3])
@@ -150,17 +163,39 @@ def _parse_one_move(block: List[str]) -> Optional[List[float]]:
     kata_lead_abs = abs(kata_lead)
 
     wr_diff = [abs(values[i] - kata_wr) for i in range(9)]
+    
+    # Cross-features between different components
+    policy_value_corr = np.corrcoef(policy, values)[0, 1] if np.std(policy) > 0 and np.std(values) > 0 else 0.0
+    policy_rank_corr = np.corrcoef(policy, rankouts)[0, 1] if np.std(policy) > 0 and np.std(rankouts) > 0 else 0.0
+    value_rank_corr = np.corrcoef(values, rankouts)[0, 1] if np.std(values) > 0 and np.std(rankouts) > 0 else 0.0
+    
+    # Consistency measures
+    policy_value_consistency = 1.0 / (1.0 + np.mean(np.abs(np.array(policy) - np.array(values))))
+    all_models_agreement = np.std([policy_max, values_max, rankouts_max]) / 9.0  # Normalized disagreement
+    
+    # KataGo interaction features  
+    kata_policy_align = policy[policy_max] * (1.0 - kata_wr_err)  # How much top policy aligns with good position
+    kata_strength_ratio = strength / (kata_wr + 0.01)  # Strength relative to position quality
 
     feats = []
     feats.extend(policy)        # 9
     feats.append(policy_max)      # +1 
     feats.append(policy_pos_diff)      # +1 
     feats.append(policy_entropy)  # +1 
-    feats.extend(policy_times_ent)  # +9 
+    feats.extend(policy_times_ent)  # +9
+    feats.append(policy_std)      # +1
+    feats.append(policy_variance) # +1
+    feats.append(policy_top3_sum) # +1
+    feats.append(policy_gini)     # +1
+    feats.append(policy_range)    # +1 
 
     feats.extend(values)        # +9 
     feats.append(values_max)      # +1 
     feats.append(values_pos_diff)      # +1 
+    feats.append(values_entropy)  # +1
+    feats.append(values_std)      # +1
+    feats.append(values_weighted_avg)  # +1
+    feats.append(values_confidence)    # +1
 
     feats.extend(rankouts)      # +9 
     feats.append(rankouts_max)    # +1 
@@ -177,7 +212,18 @@ def _parse_one_move(block: List[str]) -> Optional[List[float]]:
     feats.append(kata_lead_abs)   # +1
     feats.append(kata_unc)        # +1 
 
-    feats.extend(wr_diff)        # +9 = 69
+    feats.extend(wr_diff)        # +9
+    
+    # Cross features
+    feats.append(policy_value_corr)     # +1
+    feats.append(policy_rank_corr)      # +1
+    feats.append(value_rank_corr)       # +1
+    feats.append(policy_value_consistency) # +1
+    feats.append(all_models_agreement)  # +1
+    feats.append(kata_policy_align)     # +1
+    feats.append(kata_strength_ratio)   # +1
+    
+    # Total: 69 + 5 + 4 + 7 = 85 features per move
     return feats
 
 
@@ -210,12 +256,12 @@ def parse_moves_from_file(fp: Path) -> List[List[float]]:
 
 def aggregate_features(moves: List[List[float]]) -> np.ndarray:
     """Aggregate move-level features to a fixed-length vector per (game/file).
-       We use simple stats: mean, std, min, max for each dim + move_count.
-       Output shape: 69*18 + 1 = 901 dims.
+       We use comprehensive stats for better feature representation.
+       Output shape: 85*20 + extra features = ~1700+ dims.
     """
     if not moves:
         # Return zeros if empty (shouldn't happen if data is well-formed)
-        return np.zeros(69 * 18 + 1, dtype=np.float32)
+        return np.zeros(85 * 23 + 3, dtype=np.float32)
     X = np.asarray(moves, dtype=np.float32)  
     n_moves, n_feats = X.shape
 
@@ -277,10 +323,41 @@ def aggregate_features(moves: List[List[float]]) -> np.ndarray:
 
     #  print(f"[DEBUG] early_mean={early_mean}, mid_mean={mid_mean}, late_mean={late_mean}")
 
-    out = np.concatenate([mean, std, median, vmin, vmax, q20, q80]) # 7
-    out = np.concatenate([out, early_mean, mid_mean, late_mean, early_std, mid_std, late_std, mid_median, mid_q20, mid_q80, mid_skew, mid_kurt]) # +11 = 18
-    #print(f"[DEBUG] Aggregated {n_moves} moves -> feature: {out}")
-    out = np.concatenate([out, np.array([float(len(moves))])]) # +1
+    # Add more percentiles and trend analysis
+    q10 = np.percentile(X, 10, axis=0)
+    q90 = np.percentile(X, 90, axis=0)
+    
+    # Trend analysis - how features change over time
+    trend = np.zeros(n_feats)
+    if n_moves > 10:  # Only compute trend if enough moves
+        x_vals = np.arange(n_moves)
+        for i in range(n_feats):
+            try:
+                slope, _ = np.polyfit(x_vals, X[:, i], 1)
+                trend[i] = slope
+            except:
+                trend[i] = 0.0
+    
+    # Game phase intensity (how much features change between phases)
+    phase_change1 = np.zeros(n_feats)  # Early to mid
+    phase_change2 = np.zeros(n_feats)  # Mid to late
+    if early.shape[0] > 0 and mid.shape[0] > 0:
+        phase_change1 = np.abs(early_mean - mid_mean)
+    if mid.shape[0] > 0 and late.shape[0] > 0:
+        phase_change2 = np.abs(mid_mean - late_mean)
+
+    out = np.concatenate([mean, std, median, vmin, vmax, q10, q20, q80, q90]) # 9
+    out = np.concatenate([out, early_mean, mid_mean, late_mean, early_std, mid_std, late_std, mid_median, mid_q20, mid_q80, mid_skew, mid_kurt]) # +11 = 20
+    
+    # Additional aggregated features
+    game_length = float(len(moves))
+    avg_move_time = game_length / 200.0 if game_length > 0 else 0.0  # Normalize by typical game length
+    complexity_score = np.mean(std)  # Overall game complexity
+    
+    out = np.concatenate([out, trend, phase_change1, phase_change2])  # +3*n_feats
+    extra_features = np.array([game_length, avg_move_time, complexity_score])
+    out = np.concatenate([out, extra_features])
+    
     return out.astype(np.float32)
 
 
@@ -344,7 +421,7 @@ def parse_file_aggregate(fp: Path) -> Tuple[np.ndarray, int]:
     rank = m.group(1)
     y_idx = RANK2IDX[rank]
 
-    X = np.vstack(feats) if feats else np.zeros((0, 69 * 18 + 1), dtype=np.float32)
+    X = np.vstack(feats) if feats else np.zeros((0, 85 * 23 + 3), dtype=np.float32)
     y = np.full((X.shape[0],), y_idx, dtype=np.int64)
     return X, y_idx, y
 
@@ -379,7 +456,7 @@ def load_test_set(test_dir: Path) -> Tuple[List[str], np.ndarray]:
         feats.append(Xvec)
         ids.append(fp.stem)
         print(f"[INFO] Parsed test file {fp.name}: moves={len(moves)} -> features shape={Xvec.shape}")
-    X = np.vstack(feats) if feats else np.zeros((0, 51 * 18 + 1), dtype=np.float32)
+    X = np.vstack(feats) if feats else np.zeros((0, 85 * 23 + 3), dtype=np.float32)
     return ids, X
 
 # adjust hyperparameters here
@@ -389,20 +466,41 @@ def train_lightgbm(X: np.ndarray, y: np.ndarray, seed: int = 42):
     params = dict(
         objective="multiclass",
         num_class=9,
-        learning_rate=0.05, # 0.01 - 0.05
-        n_estimators=1500, # - 2000
-        subsample=0.8, # 0.8 - 1.0
-        colsample_bytree=0.9,
-        num_leaves=255,
-        max_depth=-1,
+        learning_rate=0.03,  # Lower for better convergence
+        n_estimators=3000,   # More trees for complex features
+        num_leaves=64,      # Reduce to prevent overfitting with more features
+        max_depth=8,         # 6 - 10
         random_state=seed,
         n_jobs=-1,
-        min_child_samples=20,
-        reg_alpha=0.1,
-        reg_lambda=0.1,
+        min_child_samples=30, # Increase for regularization
+        min_child_weight=1e-3,
+        reg_alpha=0.3,       # Increase L1 regularization
+        reg_lambda=0.3,      # Increase L2 regularization 
+        feature_fraction=0.75, # Feature bagging
+        bagging_fraction=0.8,
+        bagging_freq=5,
+        min_split_gain=0.1,   # Prevent weak splits
+        extra_trees=True,     # Add randomness
+        path_smooth=1.0,      # Smoothing for better generalization
     )
+    # Use early stopping with validation split
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.15, stratify=y, random_state=seed)
+    
     model = lgb.LGBMClassifier(**params)
-    model.fit(X, y)
+    model.fit(
+        X_train, y_train,
+        eval_set=[(X_val, y_val)],
+        eval_metric='multi_logloss',
+        callbacks=[
+            lgb.early_stopping(stopping_rounds=100, verbose=False),
+            lgb.log_evaluation(period=0)  # Silent training
+        ]
+    )
+    
+    val_pred = model.predict(X_val)
+    val_acc = accuracy_score(y_val, val_pred)
+    print(f"[INFO] Validation accuracy: {val_acc:.4f}")
+    
     return model
 
 
