@@ -579,24 +579,32 @@ def main():
             print('[ERROR] No training samples parsed. Check dataset path or parser assumptions.', file=sys.stderr)
             sys.exit(1)
 
-        if args.train_all_after_val:
+        if args.train_all_after_val and args.val_ratio and 0.0 < args.val_ratio < 1.0:
+            # validation + retrain
+            print(f"[INFO] Splitting train/val with ratio {args.val_ratio} for validation...")
+            Xtr, Xva, ytr, yva = train_test_split(
+                X, y, test_size=args.val_ratio, stratify=y, random_state=args.seed
+            )
+            model_val = train_lightgbm(Xtr, ytr, seed=args.seed)
+            yhat = model_val.predict(Xva)
+            acc = accuracy_score(yva, yhat)
+            print(f"[VALID] Accuracy = {acc:.4f}")
+        
             print("[INFO] Retraining on FULL train_set after validation...")
             model = train_lightgbm(X, y, seed=args.seed)
-        
         elif args.val_ratio and 0.0 < args.val_ratio < 1.0:
-            # Split train/val 
+            # simple validation
             print(f"[INFO] Splitting train/val with ratio {args.val_ratio}...")
             Xtr, Xva, ytr, yva = train_test_split(
                 X, y, test_size=args.val_ratio, stratify=y, random_state=args.seed
             )
-
             model = train_lightgbm(Xtr, ytr, seed=args.seed)
-
-            # Validate
             yhat = model.predict(Xva)
             acc = accuracy_score(yva, yhat)
             print(f"[VALID] Accuracy = {acc:.4f}")
-
+        else:
+            # full train
+            model = train_lightgbm(X, y, seed=args.seed)
         # Save model
         save_model(model, Path(args.weights))
     else:
